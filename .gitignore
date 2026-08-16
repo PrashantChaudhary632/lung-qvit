@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# Data (never commit raw scans)
+data/
+*.mhd
+*.raw
+*.nii
+*.nii.gz
+
+# Results / checkpoints
+results/*.pt
+results/*.pth
+results/*.ckpt
+results/*.png
+
+# pylidc cache/config
+.pylidcrc
+pylidc.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
