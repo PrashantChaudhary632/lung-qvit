@@ -1,18 +1,17 @@
 """
 Malignancy label extraction for the 3-class Normal / Benign / Malignant task.
 
-LUNA16's own annotations.csv gives nodule *location*, not malignancy.
-Malignancy scores (1-5 scale, per-radiologist) live in the original LIDC-IDRI
-XML annotation files. `pylidc` parses those XMLs and links them to LUNA16
-series UIDs via a local SQLite DB it builds from the raw LIDC-IDRI download.
-
-pylidc setup (one-time, once you have LIDC-IDRI XML data):
-    1. Create a .pylidcrc config file pointing pylidc at your DICOM directory.
-    2. pylidc needs the DICOM directory structure to build its index the
-       first time — see pylidc docs for the lightest-weight way to get this.
+pylidc ships with a pre-built SQLite database containing all LIDC-IDRI
+malignancy annotations -- no custom database population is needed. It's
+queryable directly by series_instance_uid, which matches LUNA16's own
+patient identifiers.
 """
 
 from enum import IntEnum
+
+import numpy as np
+if not hasattr(np, "int"):
+    np.int = int  # compatibility shim: pylidc 0.2.3 uses the deprecated np.int alias
 
 
 class DiagnosisLabel(IntEnum):
@@ -35,7 +34,7 @@ def malignancy_score_to_label(mean_malignancy: float) -> DiagnosisLabel:
         return DiagnosisLabel.MALIGNANT
     else:
         raise ValueError(
-            "Malignancy score == 3 (indeterminate) — decide explicitly how "
+            "Malignancy score == 3 (indeterminate) -- decide explicitly how "
             "to handle these (drop from dataset vs. separate 'indeterminate' "
             "class vs. manual review) rather than defaulting silently."
         )
@@ -44,21 +43,61 @@ def malignancy_score_to_label(mean_malignancy: float) -> DiagnosisLabel:
 def get_labels_via_pylidc(series_uid: str):
     """Fetch per-nodule malignancy consensus for one series via pylidc.
 
-    NOT YET IMPLEMENTED — stub to fill in once pylidc + LIDC-IDRI XML data
-    is set up locally. We'll implement this together once you have that
-    data, rather than guessing at correct nodule-to-series matching now.
+    Returns a list of dicts: [{"centroid_xyz": (x,y,z), "mean_malignancy": float,
+    "label": DiagnosisLabel, "n_readers": int}, ...]
+
+    Multiple radiologists independently annotate the same physical nodule in
+    LIDC-IDRI. cluster_annotations() groups those independent annotations
+    together so we get one consensus per nodule rather than one row per
+    radiologist reading. mean_malignancy averages the 1-5 malignancy scores
+    across the radiologists who annotated that nodule.
     """
-    raise NotImplementedError(
-        "Set up pylidc + LIDC-IDRI XML annotations first, then implement "
-        "using pylidc.query(pylidc.Scan) and cluster_annotations() to get "
-        "per-nodule consensus malignancy."
-    )
+    import pylidc as pl
+
+    scan = pl.query(pl.Scan).filter(pl.Scan.series_instance_uid == series_uid).first()
+    if scan is None:
+        return []
+
+    nodules = scan.cluster_annotations(verbose=False)
+
+    results = []
+    for nodule_annotations in nodules:
+        # LIDC-IDRI has at most 4 radiologist readers per scan. A cluster
+        # larger than 4 means cluster_annotations() likely merged two
+        # spatially-close but physically distinct nodules -- excluding
+        # these rather than averaging across a corrupted group. This is a
+        # documented known limitation, not a silent default.
+        if len(nodule_annotations) > 4:
+            continue
+
+        malignancy_scores = [a.malignancy for a in nodule_annotations]
+        mean_malignancy = sum(malignancy_scores) / len(malignancy_scores)
+
+        centroids = [a.centroid for a in nodule_annotations]
+        mean_centroid = tuple(
+            sum(c[i] for c in centroids) / len(centroids) for i in range(3)
+        )
+
+        try:
+            label = malignancy_score_to_label(mean_malignancy)
+        except ValueError:
+            # mean == 3, indeterminate -- skip rather than silently guess
+            continue
+
+        results.append({
+            "centroid_xyz": mean_centroid,
+            "mean_malignancy": mean_malignancy,
+            "label": label,
+            "n_readers": len(nodule_annotations),
+        })
+
+    return results
 
 
 def diameter_heuristic_label(diameter_mm: float) -> DiagnosisLabel:
     """Crude diameter-based fallback label for smoke-testing ONLY.
 
-    NOT a valid label source for reported experiments — nodule size is
+    NOT a valid label source for reported experiments -- nodule size is
     correlated with but far from determinative of malignancy. Use this only
     to verify the data pipeline runs end-to-end before pylidc is set up.
     """
