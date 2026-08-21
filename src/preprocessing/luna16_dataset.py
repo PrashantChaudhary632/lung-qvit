@@ -161,7 +161,7 @@ class LUNA16Dataset(Dataset):
             "image": torch.from_numpy(patch).unsqueeze(0).float(),  # (1, Z, Y, X)
             "label": torch.tensor(int(row["label"]), dtype=torch.long),
             "patient_id": row["patient_id"],
-            "diameter_mm": float(row["diameter_mm"]) if pd.notna(row["diameter_mm"]) else None,
+                        "diameter_mm": float(row["diameter_mm"]) if pd.notna(row["diameter_mm"]) else float("nan"),
         }
 
 
