@@ -95,6 +95,45 @@ def extract_patch(volume_array: np.ndarray, center_voxel_zyx, patch_size=(32, 64
 
     return patch
 
+def load_dicom_slice_metadata(patient_dicom_dir):
+    """Load and sort DICOM slice metadata for a patient, once per patient
+    rather than once per nodule. Returns a list of (ImagePositionPatient,
+    PixelSpacing) tuples sorted by z ascending -- everything
+    pylidc_centroid_to_world needs, without re-reading pixel data.
+    """
+    import pydicom
+    from pathlib import Path
+
+    dcm_paths = list(Path(patient_dicom_dir).rglob("*.dcm"))
+    dcm_files = [pydicom.dcmread(str(p), stop_before_pixels=True) for p in dcm_paths]
+    dcm_files.sort(key=lambda d: float(d.ImagePositionPatient[2]))
+
+    return [
+        (np.array(d.ImagePositionPatient), np.array(d.PixelSpacing))
+        for d in dcm_files
+    ]
+
+
+def pylidc_centroid_to_world(centroid_ijk, slice_metadata):
+    """Convert a pylidc Annotation.centroid (index-space i,j,k) to real-world
+    mm coordinates (x, y, z), matching the convention used in annotations.csv.
+
+    pylidc's centroid uses (row, col, slice_index) ordering, which maps to
+    world coordinates as (y, x, z) -- validated empirically against known
+    annotations.csv nodule locations (see validate_coordinate_conversion.py).
+
+    slice_metadata: output of load_dicom_slice_metadata() for this patient.
+    """
+    i, j, k = centroid_ijk
+    k = int(round(k))
+    position, pixel_spacing = slice_metadata[k]
+
+    origin_xy = position[:2]
+    z_mm = float(position[2])
+
+    # i=row->y, j=col->x (validated convention)
+    world_xy = origin_xy + np.array([j, i]) * pixel_spacing
+    return np.array([world_xy[0], world_xy[1], z_mm])
 
 if __name__ == "__main__":
     import sys
@@ -112,3 +151,4 @@ if __name__ == "__main__":
 
     windowed = apply_lung_window(resampled.array)
     print(f"Windowed range: [{windowed.min():.3f}, {windowed.max():.3f}]")
+
