@@ -42,11 +42,15 @@ class LUNA16Dataset(Dataset):
     dicom_root : str
         Directory containing LIDC-IDRI/<patient_id>/ DICOM folders. Only
         used when label_source="pylidc".
+    normal_csv : str, optional
+        Path to a pre-sampled Normal-class candidate CSV (see
+        build_normal_class.py). If provided, these are appended as
+        label=0 (NORMAL) examples alongside the nodule-derived labels.
     """
 
     def __init__(self, data_dir, annotations_csv=None, patch_size=(32, 64, 64),
                  target_spacing=(1.0, 1.0, 1.0), label_source="diameter",
-                 dicom_root="data/LIDC-IDRI"):
+                 dicom_root="data/LIDC-IDRI", normal_csv=None):
         self.data_dir = Path(data_dir)
         self.patch_size = patch_size
         self.target_spacing = target_spacing
@@ -65,6 +69,9 @@ class LUNA16Dataset(Dataset):
             self.annotations = self._build_from_csv(annotations_csv, available_uids)
         else:
             raise ValueError(f"Unknown label_source: {label_source}")
+
+        if normal_csv is not None:
+            self._add_normal_class(normal_csv, available_uids)
 
         if len(self.annotations) == 0:
             raise ValueError("No usable labeled nodules found -- check data_dir and label_source.")
@@ -106,6 +113,28 @@ class LUNA16Dataset(Dataset):
                     "n_readers": nodule["n_readers"],
                 })
         return pd.DataFrame(rows)
+
+    def _add_normal_class(self, normal_csv, available_uids):
+        """Append Normal-class (no nodule) examples from a pre-sampled CSV
+        (see build_normal_class.py) to self.annotations."""
+        normal = pd.read_csv(normal_csv)
+        normal = normal[normal["seriesuid"].isin(available_uids)].copy()
+
+        # Map seriesuid -> LIDC-IDRI-dddd patient_id, matching the convention
+        # used by nodule rows (critical: without this, the same physical
+        # patient would appear under two different patient_id values,
+        # breaking patient-stratified splitting).
+        def resolve_patient_id(uid):
+            matches = list(self.dicom_root.glob(f"*/{uid}"))
+            return matches[0].parent.name if matches else uid  # fallback: seriesuid itself
+
+        normal["patient_id"] = normal["seriesuid"].apply(resolve_patient_id)
+        normal["diameter_mm"] = np.nan
+        normal["label"] = 0  # DiagnosisLabel.NORMAL
+
+        self.annotations = pd.concat([self.annotations, normal], ignore_index=True)
+
+    
 
     def __len__(self):
         return len(self.annotations)
